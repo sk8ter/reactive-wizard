@@ -203,9 +203,15 @@ public class HttpClient implements InvocationHandler {
         publisher = withRetry(request, flux).onErrorResume(e -> convertError(request, e));
 
         if (Single.class.isAssignableFrom(method.getReturnType())) {
-            return new SingleWithResponse(RxReactiveStreams.toSingle(publisher), rawResponse);
+            return new SingleWithResponse<>(RxReactiveStreams.toSingle(publisher), rawResponse);
         }
-        return new ObservableWithResponse(RxReactiveStreams.toObservable(publisher), rawResponse);
+        if (Mono.class.isAssignableFrom(method.getReturnType())) {
+            return new MonoWithResponse<>(Mono.from(publisher), rawResponse);
+        }
+        if (Flux.class.isAssignableFrom(method.getReturnType())) {
+            return new FluxWithResponse<>(Flux.from(publisher), rawResponse);
+        }
+        return new ObservableWithResponse<>(RxReactiveStreams.toObservable(publisher), rawResponse);
     }
 
     /**
@@ -239,6 +245,36 @@ public class HttpClient implements InvocationHandler {
 
         return source
             .map(data -> new Response<>(((SingleWithResponse<T>)source).getResponse(), data));
+    }
+
+    /**
+     * Should be used with an flux coming directly from another api-call to get access to meta data, such as status and headers
+     * from the response.
+     * @param source the source flux, must be flux returned from api call
+     * @param <T> the type of data that should be returned in the call
+     * @return an flux that along with the data passes the response meta data
+     */
+    public static <T> Flux<Response<T>> getFullResponse(Flux<T> source) {
+        if (!(source instanceof FluxWithResponse)) {
+            throw new IllegalArgumentException("Must be used with observable returned from api call");
+        }
+
+        return source.map(data -> new Response<>(((FluxWithResponse<T>)source).getResponse(), data))
+            .switchIfEmpty(Flux.defer(() -> Flux.just(new Response<>(((FluxWithResponse<T>)source).getResponse(), null))));
+    }
+
+    /**
+     * Should be used with a Mono coming directly from another api-call to get access to meta data, such as status and header
+     * @param source the source mono, must be mono returned from api call
+     * @param <T> the type of data that should be returned in the call
+     * @return an mono that along with the data passes the response object from netty
+     */
+    public static <T> Mono<Response<T>> getFullResponse(Mono<T> source) {
+        if (!(source instanceof MonoWithResponse)) {
+            throw new IllegalArgumentException("Must be used with mono returned from api call");
+        }
+
+        return source.map(data -> new Response<>(((MonoWithResponse<T>)source).getResponse(), data));
     }
 
     private <T> Flux<T> convertError(RequestBuilder fullReq, Throwable throwable) {
