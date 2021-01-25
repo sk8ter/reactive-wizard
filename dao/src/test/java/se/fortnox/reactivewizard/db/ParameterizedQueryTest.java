@@ -1,5 +1,8 @@
 package se.fortnox.reactivewizard.db;
 
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import rx.Single;
 import se.fortnox.reactivewizard.db.config.DatabaseConfig;
 import com.google.common.collect.Lists;
 import org.junit.Test;
@@ -28,30 +31,41 @@ public class ParameterizedQueryTest {
     TestDao dao     = dbProxy.create(TestDao.class);
 
     @Test
-    public void shouldResolveParametersFromQuery() throws SQLException {
-        dao.namedParameters("myid", "myname").toBlocking().singleOrDefault(null);
-
-        verify(db.getConnection()).prepareStatement("SELECT * FROM foo WHERE id=? AND name=?");
-        verify(db.getPreparedStatement()).setObject(1, "myid");
-        verify(db.getPreparedStatement()).setObject(2, "myname");
+    public void shouldResolveParametersFromObservableQuery() throws SQLException {
+        dao.namedParametersObservable("myid", "myname").toBlocking().singleOrDefault(null);
+        assertPreparedStatement("SELECT * FROM foo WHERE id=? AND name=?", "myid", "myname");
     }
 
     @Test
-    public void shouldResolveNestedParametersFromQuery() throws SQLException {
+    public void shouldResolveParametersFromSingleQuery() throws SQLException {
+        // Single can only emit either a single successful value, or an error
+        db.setRowCount(1);
+
+        dao.namedParametersSingle("myid", "myname").toBlocking().value();
+
+        assertPreparedStatement("SELECT * FROM foo WHERE id=? AND name=?", "myid", "myname");
+    }
+
+    @Test
+    public void shouldResolveParametersFromFluxQuery() throws SQLException {
+        dao.namedParametersFlux("myid", "myname").blockLast();
+        assertPreparedStatement("SELECT * FROM foo WHERE id=? AND name=?", "myid", "myname");
+    }
+
+    @Test
+    public void shouldResolveParametersFromMonoQuery() throws SQLException {
+        // Mono can only emit either a single successful value, or an error
+        db.setRowCount(1);
+
+        dao.namedParametersMono("myid", "myname").block();
+
+        assertPreparedStatement("SELECT * FROM foo WHERE id=? AND name=?", "myid", "myname");
+    }
+
+    @Test
+    public void shouldResolveNestedParametersFromSingleQuery() throws SQLException {
         dao.nestedParameters("myid", new MyTestParam()).toBlocking().singleOrDefault(null);
-
-        verify(db.getConnection()).prepareStatement("SELECT * FROM foo WHERE id=? AND name=?");
-        verify(db.getPreparedStatement()).setObject(1, "myid");
-        verify(db.getPreparedStatement()).setObject(2, "testName");
-    }
-
-    @Test
-    public void shouldResolveParametersWithoutAnnotationFromQuery() throws SQLException {
-        dao.missingParamNames("myid", "myname").toBlocking().singleOrDefault(null);
-
-        verify(db.getConnection()).prepareStatement("SELECT * FROM foo WHERE id=? AND name=?");
-        verify(db.getPreparedStatement()).setObject(1, "myid");
-        verify(db.getPreparedStatement()).setObject(2, "myname");
+        assertPreparedStatement("SELECT * FROM foo WHERE id=? AND name=?", "myid", "testName");
     }
 
     @Test
@@ -80,27 +94,24 @@ public class ParameterizedQueryTest {
     public void shouldSendEnumTypesAsStrings() throws SQLException {
         TestObject myobj = new TestObject();
         myobj.setMyEnum(TestEnum.T3);
+
         dao.enumParameter(myobj).toBlocking().singleOrDefault(null);
 
-        verify(db.getConnection()).prepareStatement("INSERT INTO a VALUES (?)");
-        verify(db.getPreparedStatement()).setObject(1, "T3");
+        assertPreparedStatement("INSERT INTO a VALUES (?)", "T3");
     }
 
     @Test
-    public void shouldSupportGettersForBooleanThatHasIsAsPrefix()
-        throws SQLException {
+    public void shouldSupportGettersForBooleanThatHasIsAsPrefix() throws SQLException {
         TestObject myobj = new TestObject();
         myobj.setFinished(true);
 
         dao.booleanWithIsPrefixAsParameter(myobj).toBlocking().singleOrDefault(null);
 
-        verify(db.getConnection()).prepareStatement("INSERT INTO a VALUES (?)");
-        verify(db.getPreparedStatement()).setObject(1, true);
+        assertPreparedStatement("INSERT INTO a VALUES (?)", true);
     }
 
     @Test
     public void shouldSendMapTypesAsStrings() throws SQLException {
-
         TestObject myobj = new TestObject();
         myobj.setFinished(false);
         Map<String, String> aMap = new HashMap<String, String>();
@@ -109,10 +120,7 @@ public class ParameterizedQueryTest {
 
         dao.mapParam(myobj).toBlocking().singleOrDefault(null);
 
-        verify(db.getConnection()).prepareStatement(
-            "INSERT INTO a (a, b, c) VALUES (?::json, ?, \"a\")");
-        verify(db.getPreparedStatement()).setObject(1, "{\"aKey\":\"aValue\"}");
-        verify(db.getPreparedStatement()).setObject(2, false);
+        assertPreparedStatement("INSERT INTO a (a, b, c) VALUES (?::json, ?, \"a\")", "{\"aKey\":\"aValue\"}", false);
     }
 
     @Test
@@ -125,10 +133,7 @@ public class ParameterizedQueryTest {
 
         dao.mapParamLast(myobj).toBlocking().singleOrDefault(null);
 
-        verify(db.getConnection()).prepareStatement(
-            "INSERT INTO a (a, b, c) VALUES (?, \"a\", ?::json)");
-        verify(db.getPreparedStatement()).setObject(1, false);
-        verify(db.getPreparedStatement()).setObject(2, "{\"aKey\":\"aValue\"}");
+        assertPreparedStatement("INSERT INTO a (a, b, c) VALUES (?, \"a\", ?::json)", false, "{\"aKey\":\"aValue\"}");
     }
 
     @Test
@@ -141,11 +146,7 @@ public class ParameterizedQueryTest {
 
         dao.mapParamMiddle(myobj).toBlocking().singleOrDefault(null);
 
-        verify(db.getConnection()).prepareStatement(
-            "INSERT INTO a (a, b, c) VALUES ( ?, ?::json, \"a\")");
-        verify(db.getPreparedStatement()).setObject(1, false);
-        verify(db.getPreparedStatement()).setObject(2, "{\"aKey\":\"aValue\"}");
-
+        assertPreparedStatement("INSERT INTO a (a, b, c) VALUES ( ?, ?::json, \"a\")", false, "{\"aKey\":\"aValue\"}");
     }
 
     @Test
@@ -158,9 +159,7 @@ public class ParameterizedQueryTest {
 
         dao.listParam(myobj).toBlocking().singleOrDefault(null);
 
-        verify(db.getConnection()).prepareStatement(
-            "INSERT INTO a (a) VALUES (?)");
-        verify(db.getPreparedStatement()).setObject(1, "[{\"name\":\"testName\"},{\"name\":\"testName\"}]");
+        assertPreparedStatement("INSERT INTO a (a) VALUES (?)", "[{\"name\":\"testName\"},{\"name\":\"testName\"}]");
     }
 
     @Test
@@ -251,13 +250,29 @@ public class ParameterizedQueryTest {
         verify(db.getConnection()).createArrayOf("uuid", new Object[]{uuid1, uuid2});
     }
 
+    private void assertPreparedStatement(String statement, Object... params) throws SQLException {
+        verify(db.getConnection()).prepareStatement(statement);
+        for (int i = 0; i < params.length; i++) {
+            verify(db.getPreparedStatement()).setObject(i + 1, params[i]);
+        }
+    }
+
     enum TestEnum {
         T1, T2, T3
     }
 
     interface TestDao {
         @Query("SELECT * FROM foo WHERE id=:id AND name=:name")
-        Observable<String> namedParameters(String id, String name);
+        Observable<String> namedParametersObservable(String id, String name);
+
+        @Query("SELECT * FROM foo WHERE id=:id AND name=:name")
+        Single<String> namedParametersSingle(String id, String name);
+
+        @Query("SELECT * FROM foo WHERE id=:id AND name=:name")
+        Flux<String> namedParametersFlux(String id, String name);
+
+        @Query("SELECT * FROM foo WHERE id=:id AND name=:name")
+        Mono<String> namedParametersMono(String id, String name);
 
         @Query("SELECT * FROM foo WHERE id=:id AND name=:test.name")
         Observable<String> nestedParameters(String id, MyTestParam test);
@@ -267,9 +282,6 @@ public class ParameterizedQueryTest {
 
         @Query("SELECT * FROM foo WHERE id=:id AND name=:name")
         Observable<String> missingParamName(String id, String misspelledName);
-
-        @Query("SELECT * FROM foo WHERE id=:id AND name=:name")
-        Observable<String> missingParamNames(String id, String name);
 
         @Query("INSERT INTO a VALUES (:testObject.myEnum)")
         Observable<String> enumParameter(TestObject testObject);
